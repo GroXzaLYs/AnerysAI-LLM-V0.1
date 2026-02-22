@@ -248,24 +248,45 @@ class Trainer:
         """
         best_val_loss = float('inf')
         
-        for epoch in range(num_epochs):
+        try:
+            for epoch in range(num_epochs):
+                print(f"\n{'='*50}")
+                print(f"Epoch {epoch + 1}/{num_epochs}")
+                print(f"{'='*50}")
+                
+                train_loss = self.train_epoch()
+                print(f"Train Loss: {train_loss:.4f}")
+                
+                if self.val_dataloader:
+                    val_loss = self.validate()
+                    print(f"Val Loss: {val_loss:.4f}")
+                    
+                    # Save best model
+                    if save_path and val_loss < best_val_loss:
+                        best_val_loss = val_loss
+                        torch.save(self.model.state_dict(), save_path)
+                        print(f"Saved best model with val_loss: {val_loss:.4f}")
+                        
+        except KeyboardInterrupt:
             print(f"\n{'='*50}")
-            print(f"Epoch {epoch + 1}/{num_epochs}")
+            print("Training interrupted by user!")
+            print("Saving current model state...")
             print(f"{'='*50}")
             
-            train_loss = self.train_epoch()
-            print(f"Train Loss: {train_loss:.4f}")
+            # Save interrupted model
+            interrupt_path = "checkpoints/interrupted_model.pt"
+            torch.save({
+                'model_state_dict': self.model.state_dict(),
+                'optimizer_state_dict': self.optimizer.state_dict(),
+                'scheduler_state_dict': self.scheduler.state_dict() if self.scheduler else None,
+                'epoch': epoch if 'epoch' in locals() else 0,
+                'global_step': self.global_step,
+                'train_losses': self.train_losses,
+                'val_losses': self.val_losses,
+            }, interrupt_path)
+            print(f"Model saved to {interrupt_path}")
+            print(f"Epoch: {epoch if 'epoch' in locals() else 0}, Global step: {self.global_step}")
             
-            if self.val_dataloader:
-                val_loss = self.validate()
-                print(f"Val Loss: {val_loss:.4f}")
-                
-                # Save best model
-                if save_path and val_loss < best_val_loss:
-                    best_val_loss = val_loss
-                    torch.save(self.model.state_dict(), save_path)
-                    print(f"Saved best model with val_loss: {val_loss:.4f}")
-        
         print(f"\n{'='*50}")
         print("Training completed!")
         print(f"{'='*50}")

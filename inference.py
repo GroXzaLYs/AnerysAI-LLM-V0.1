@@ -100,9 +100,10 @@ def demonstrate_single_generation(model, tokenizer, device):
             generated, score = generator.generate(
                 prompt=prompt,
                 language=detected_lang,
-                max_new_tokens=50,
+                max_new_tokens=30,
                 generation_type=GenerationType.TOP_K,
-                top_k=50,
+                top_k=20,
+                temperature=0.7,
                 return_scores=True,
             )
             print(f"Generated (Top-K): {generated}")
@@ -132,9 +133,10 @@ def demonstrate_single_generation(model, tokenizer, device):
             generated, score = generator.generate(
                 prompt=prompt,
                 language=detected_lang,
-                max_new_tokens=50,
+                max_new_tokens=30,
                 generation_type=GenerationType.TOP_P,
-                top_p=0.95,
+                top_p=0.8,
+                temperature=0.7,
                 return_scores=True,
             )
             print(f"Generated (Top-P): {generated}")

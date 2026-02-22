@@ -138,26 +138,17 @@ class TextGenerator:
         batch_size = input_ids.shape[0]
         device = input_ids.device
         
-        past_key_values = None
         generated_ids = input_ids.clone()
         
         for step in range(max_new_tokens):
             # Forward pass
             with torch.no_grad():
-                if step > 0 and past_key_values is not None:
-                    # Only pass last token when using cache
-                    model_input = generated_ids[:, -1:]
-                else:
-                    model_input = generated_ids
-                
                 output = self.model(
-                    model_input,
-                    use_cache=True,
-                    past_key_values=past_key_values,
+                    generated_ids,
+                    use_cache=False,
                 )
                 
                 logits = output["logits"][:, -1, :]
-                past_key_values = output.get("past_key_values")
             
             # Apply temperature
             logits = logits / temperature

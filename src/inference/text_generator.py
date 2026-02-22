@@ -8,6 +8,9 @@ import torch.nn.functional as F
 from typing import List, Dict, Optional, Tuple
 from enum import Enum
 import numpy as np
+import requests
+from bs4 import BeautifulSoup
+import re
 
 class GenerationType(Enum):
     """Generation strategy type"""
@@ -121,6 +124,186 @@ class TextGenerator:
                 score = self._calculate_score(generated_ids)
             
             return generated_text, score
+    
+    def _calculate_score(self, generated_ids: torch.Tensor) -> float:
+        """
+        Calculate generation score/probability
+        
+        Args:
+            generated_ids: Generated token IDs
+        
+        Returns:
+            Average log probability score
+        """
+        with torch.no_grad():
+            output = self.model(generated_ids)
+            logits = output["logits"]
+            
+            # Shift logits and labels for next token prediction
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = generated_ids[..., 1:].contiguous()
+            
+            # Calculate log probabilities
+            log_probs = torch.log_softmax(shift_logits, dim=-1)
+            token_log_probs = log_probs.gather(-1, shift_labels.unsqueeze(-1)).squeeze(-1)
+            
+            # Average log probability
+            score = token_log_probs.mean().item()
+            
+            return score
+    
+    def think_and_generate(
+        self,
+        prompt: str,
+        language: str = "en",
+        max_new_tokens: int = 100,
+        temperature: float = 0.7,
+        top_k: int = 50,
+        top_p: float = 0.9,
+        num_steps: int = 3,
+    ) -> str:
+        """
+        Generate text with chain-of-thought reasoning
+        
+        Args:
+            prompt: Input prompt
+            language: Language code ("en" or "id")
+            max_new_tokens: Maximum tokens per step
+            temperature: Sampling temperature
+            top_k: Top-K sampling
+            top_p: Top-P sampling
+            num_steps: Number of reasoning steps
+        
+        Returns:
+            Generated text with reasoning steps
+        """
+        # Create chain-of-thought prompt
+        if language == "en":
+            cot_prompt = f"Let's think step by step about: {prompt}\n\nStep 1:"
+        else:
+            cot_prompt = f"Mari kita pikirkan langkah demi langkah tentang: {prompt}\n\nLangkah 1:"
+        
+        full_response = cot_prompt
+        
+        for step in range(1, num_steps + 1):
+            # Generate reasoning for this step
+            step_text, _ = self.generate(
+                full_response,
+                language=language,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
+                generation_type=GenerationType.TOP_P,
+            )
+            
+            # Extract the new reasoning
+            if language == "en":
+                next_step_marker = f"Step {step + 1}:" if step < num_steps else "Final answer:"
+            else:
+                next_step_marker = f"Langkah {step + 1}:" if step < num_steps else "Jawaban akhir:"
+            
+            # Find where the next step begins
+            marker_pos = step_text.find(next_step_marker)
+            if marker_pos != -1:
+                reasoning = step_text[len(full_response):marker_pos].strip()
+                full_response += reasoning + "\n\n" + next_step_marker
+            else:
+                # If no next step marker, take all new text
+                reasoning = step_text[len(full_response):].strip()
+                full_response += reasoning
+                break
+        
+        return full_response
+    
+    def search_and_generate(
+        self,
+        query: str,
+        language: str = "en",
+        max_new_tokens: int = 200,
+        temperature: float = 0.7,
+        top_k: int = 50,
+        top_p: float = 0.9,
+    ) -> str:
+        """
+        Search for information and generate response
+        
+        Args:
+            query: Search query
+            language: Language code
+            max_new_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+            top_k: Top-K sampling
+            top_p: Top-P sampling
+        
+        Returns:
+            Generated response with search context
+        """
+        # Perform web search (using DuckDuckGo instant answers)
+        search_results = self._web_search(query, language)
+        
+        # Create prompt with search context
+        if language == "en":
+            context_prompt = f"Based on the following search results, answer the question: {query}\n\nSearch Results:\n{search_results}\n\nAnswer:"
+        else:
+            context_prompt = f"Berdasarkan hasil pencarian berikut, jawab pertanyaan: {query}\n\nHasil Pencarian:\n{search_results}\n\nJawaban:"
+        
+        # Generate response
+        response, _ = self.generate(
+            context_prompt,
+            language=language,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_k=top_k,
+            top_p=top_p,
+            generation_type=GenerationType.TOP_P,
+        )
+        
+        return response
+    
+    def _web_search(self, query: str, language: str = "en") -> str:
+        """
+        Perform web search using DuckDuckGo instant answers
+        
+        Args:
+            query: Search query
+            language: Language code
+        
+        Returns:
+            Search results as formatted text
+        """
+        try:
+            # Use DuckDuckGo instant answers API
+            url = f"https://api.duckduckgo.com/?q={query}&format=json&no_html=1&skip_disambig=1"
+            if language == "id":
+                url += "&kl=id-id"
+            
+            response = requests.get(url, timeout=10)
+            data = response.json()
+            
+            results = []
+            
+            # Add instant answer if available
+            if data.get('Answer'):
+                results.append(f"Instant Answer: {data['Answer']}")
+            
+            # Add abstract if available
+            if data.get('AbstractText'):
+                results.append(f"Abstract: {data['AbstractText']}")
+            
+            # Add related topics
+            if data.get('RelatedTopics'):
+                for topic in data['RelatedTopics'][:3]:  # Limit to 3
+                    if topic.get('Text'):
+                        results.append(f"Related: {topic['Text']}")
+            
+            if not results:
+                return "No search results found."
+            
+            return "\n".join(results)
+            
+        except Exception as e:
+            return f"Search failed: {str(e)}"
     
     def _sample_generation(
         self,

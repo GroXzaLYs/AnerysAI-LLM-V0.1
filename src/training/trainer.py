@@ -129,6 +129,7 @@ class Trainer:
         scheduler,
         device: str = "cuda",
         config = None,
+        gradient_accumulation_steps: int = 1,
     ):
         self.model = model
         self.train_dataloader = train_dataloader
@@ -137,6 +138,7 @@ class Trainer:
         self.scheduler = scheduler
         self.device = device
         self.config = config
+        self.gradient_accumulation_steps = gradient_accumulation_steps
         
         # Loss function with label smoothing
         self.criterion = LabelSmoothingLoss(
@@ -149,7 +151,7 @@ class Trainer:
         self.val_losses = []
     
     def train_epoch(self) -> float:
-        """Train for one epoch"""
+        """Train for one epoch with gradient accumulation"""
         self.model.train()
         total_loss = 0
         num_batches = 0
@@ -160,6 +162,8 @@ class Trainer:
             disable=False
         )
         
+        accumulation_steps = 0
+        
         for batch_idx, batch in enumerate(progress_bar):
             # Move batch to device
             input_ids = batch["input_ids"].to(self.device)
@@ -169,14 +173,52 @@ class Trainer:
             output = self.model(input_ids)
             logits = output["logits"]
             
-            # Compute loss
-            loss = self.criterion(logits, labels)
+            # Compute loss (scale by accumulation steps for proper averaging)
+            loss = self.criterion(logits, labels) / self.gradient_accumulation_steps
             
             # Backward pass
-            self.optimizer.zero_grad()
             loss.backward()
             
-            # Gradient clipping
+            accumulation_steps += 1
+            
+            # Only update weights after accumulation steps
+            if accumulation_steps == self.gradient_accumulation_steps:
+                # Gradient clipping
+                if self.config and self.config.gradient_clip_val > 0:
+                    torch.nn.utils.clip_grad_norm_(
+                        self.model.parameters(),
+                        self.config.gradient_clip_val
+                    )
+                
+                self.optimizer.step()
+                self.optimizer.zero_grad()
+                
+                accumulation_steps = 0
+                num_batches += 1
+                self.global_step += 1
+                
+                # Update progress bar
+                avg_loss = total_loss / max(1, num_batches)
+                progress_bar.set_postfix({"loss": f"{avg_loss:.4f}"})
+                
+                # Log periodically
+                if self.config and self.global_step % self.config.log_steps == 0:
+                    print(f"\nStep {self.global_step}, Loss: {avg_loss:.4f}")
+                
+                # Validation step
+                if (
+                    self.val_dataloader and
+                    self.config and
+                    self.global_step % self.config.eval_steps == 0
+                ):
+                    val_loss = self.validate()
+                    print(f"Validation Loss: {val_loss:.4f}")
+            else:
+                # Accumulate loss for display
+                total_loss += loss.item() * self.gradient_accumulation_steps
+        
+        # Handle remaining accumulated gradients
+        if accumulation_steps > 0:
             if self.config and self.config.gradient_clip_val > 0:
                 torch.nn.utils.clip_grad_norm_(
                     self.model.parameters(),
@@ -184,29 +226,12 @@ class Trainer:
                 )
             
             self.optimizer.step()
+            self.optimizer.zero_grad()
             
-            total_loss += loss.item()
             num_batches += 1
             self.global_step += 1
-            
-            # Update progress bar
-            avg_loss = total_loss / num_batches
-            progress_bar.set_postfix({"loss": f"{avg_loss:.4f}"})
-            
-            # Log periodically
-            if self.config and self.global_step % self.config.log_steps == 0:
-                print(f"\nStep {self.global_step}, Loss: {avg_loss:.4f}")
-            
-            # Validation step
-            if (
-                self.val_dataloader and
-                self.config and
-                self.global_step % self.config.eval_steps == 0
-            ):
-                val_loss = self.validate()
-                print(f"Validation Loss: {val_loss:.4f}")
         
-        avg_epoch_loss = total_loss / num_batches
+        avg_epoch_loss = total_loss / max(1, num_batches)
         self.train_losses.append(avg_epoch_loss)
         
         # Step scheduler

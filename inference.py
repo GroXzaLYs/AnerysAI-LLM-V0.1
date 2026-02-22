@@ -46,12 +46,11 @@ def load_model_and_tokenizer(checkpoint_dir="checkpoints", device="cpu"):
     # Load weights
     model_path = checkpoint_dir / "best_model.pt"
     if model_path.exists():
-        state_dict = torch.load(model_path, map_location=device)
+        state_dict = torch.load(model_path, map_location=device, weights_only=True)
         model.load_state_dict(state_dict)
         print(f"Model loaded from {model_path}")
     else:
-        print(f"Model not found at {model_path}")
-        return model, None
+        print(f"Model not found at {model_path}, using random initialization")
     
     # Load tokenizer
     tokenizer = BaseTokenizer(vocab_size=model_config.vocab_size)
@@ -186,6 +185,63 @@ def demonstrate_batch_generation(model, tokenizer, device):
         print(f"Batch generation error: {e}")
 
 
+def demonstrate_thinking_and_searching(model, tokenizer, device):
+    """
+    Demonstrate thinking (chain-of-thought) and searching capabilities
+    """
+    print(f"\n{'='*70}")
+    print("Thinking and Searching Demo")
+    print(f"{'='*70}\n")
+    
+    generator = TextGenerator(model, tokenizer, device=device)
+    
+    # Chain-of-thought examples
+    print("Chain-of-Thought Reasoning Examples:")
+    print("-" * 70)
+    
+    thinking_prompts = [
+        "Why does the sky appear blue during the day?",
+        "How does photosynthesis work in plants?",
+        "Apa itu kecerdasan buatan dan bagaimana cara kerjanya?",
+    ]
+    
+    for prompt in thinking_prompts:
+        print(f"\nPrompt: {prompt}")
+        try:
+            thought_process = generator.think_and_generate(
+                prompt,
+                language="en" if "blue" in prompt or "photosynthesis" in prompt else "id",
+                max_new_tokens=80,
+                num_steps=2,
+            )
+            print(f"Reasoning: {thought_process}")
+        except Exception as e:
+            print(f"Thinking error: {e}")
+    
+    # Search and generate examples
+    print(f"\n{'='*70}")
+    print("Search-Augmented Generation Examples:")
+    print("-" * 70)
+    
+    search_queries = [
+        "What is the capital of France?",
+        "Berapa populasi Indonesia saat ini?",
+        "What are the benefits of renewable energy?",
+    ]
+    
+    for query in search_queries:
+        print(f"\nQuery: {query}")
+        try:
+            search_response = generator.search_and_generate(
+                query,
+                language="en" if "France" in query or "renewable" in query else "id",
+                max_new_tokens=100,
+            )
+            print(f"Response: {search_response}")
+        except Exception as e:
+            print(f"Search error: {e}")
+
+
 def interactive_generation(model, tokenizer, device):
     """
     Interactive text generation - user can input prompts
@@ -197,6 +253,9 @@ def interactive_generation(model, tokenizer, device):
     print("Commands:")
     print("  /en - Force English language")
     print("  /id - Force Indonesian language")
+    print("  /think - Enable chain-of-thought reasoning")
+    print("  /search - Enable search-augmented generation")
+    print("  /normal - Normal generation mode")
     print("  /config - Show generation config")
     print("-" * 70)
     
@@ -212,6 +271,7 @@ def interactive_generation(model, tokenizer, device):
     }
     
     forced_language = None
+    generation_mode = "normal"  # "normal", "think", "search"
     
     while True:
         try:
@@ -229,10 +289,20 @@ def interactive_generation(model, tokenizer, device):
                 elif user_input == "/id":
                     forced_language = "id"
                     print("Language forced to Indonesian")
+                elif user_input == "/think":
+                    generation_mode = "think"
+                    print("Chain-of-thought reasoning enabled")
+                elif user_input == "/search":
+                    generation_mode = "search"
+                    print("Search-augmented generation enabled")
+                elif user_input == "/normal":
+                    generation_mode = "normal"
+                    print("Normal generation mode")
                 elif user_input == "/config":
                     print("\nCurrent Generation Config:")
                     for key, value in gen_config.items():
                         print(f"  {key}: {value}")
+                    print(f"Mode: {generation_mode}")
                 else:
                     print("Unknown command")
                 continue
@@ -244,19 +314,42 @@ def interactive_generation(model, tokenizer, device):
             language = forced_language or LanguageDetector.detect_language(user_input)
             
             print(f"\nDetected Language: {language}")
+            print(f"Mode: {generation_mode}")
             print("Generating...")
             
-            # Generate
-            generated, score = generator.generate(
-                prompt=user_input,
-                language=language,
-                max_new_tokens=gen_config["max_new_tokens"],
-                temperature=gen_config["temperature"],
-                top_k=gen_config["top_k"],
-                top_p=gen_config["top_p"],
-                generation_type=GenerationType[gen_config["generation_type"].upper()],
-                return_scores=True,
-            )
+            # Generate based on mode
+            if generation_mode == "think":
+                generated = generator.think_and_generate(
+                    prompt=user_input,
+                    language=language,
+                    max_new_tokens=gen_config["max_new_tokens"],
+                    temperature=gen_config["temperature"],
+                    top_k=gen_config["top_k"],
+                    top_p=gen_config["top_p"],
+                    num_steps=3,
+                )
+                score = None
+            elif generation_mode == "search":
+                generated = generator.search_and_generate(
+                    query=user_input,
+                    language=language,
+                    max_new_tokens=gen_config["max_new_tokens"],
+                    temperature=gen_config["temperature"],
+                    top_k=gen_config["top_k"],
+                    top_p=gen_config["top_p"],
+                )
+                score = None
+            else:
+                generated, score = generator.generate(
+                    prompt=user_input,
+                    language=language,
+                    max_new_tokens=gen_config["max_new_tokens"],
+                    temperature=gen_config["temperature"],
+                    top_k=gen_config["top_k"],
+                    top_p=gen_config["top_p"],
+                    generation_type=GenerationType[gen_config["generation_type"].upper()],
+                    return_scores=True,
+                )
             
             print(f"\nGenerated: {generated}")
             if score:
@@ -300,6 +393,9 @@ def main(args):
         
         if args.batch:
             demonstrate_batch_generation(model, tokenizer, device)
+        
+        if args.thinking:
+            demonstrate_thinking_and_searching(model, tokenizer, device)
     
     print(f"\n{'='*70}")
     print("Inference completed!")
@@ -333,6 +429,12 @@ if __name__ == "__main__":
         "--batch",
         action="store_true",
         help="Also run batch generation demo"
+    )
+    
+    parser.add_argument(
+        "--thinking",
+        action="store_true",
+        help="Also run thinking and searching demo"
     )
     
     args = parser.parse_args()
